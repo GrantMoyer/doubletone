@@ -28,13 +28,6 @@ parser.add_argument(
     default=log.NOTSET,
 )
 parser.add_argument(
-    "-t",
-    "--threshold",
-    help="Threshold for color to be considered like C, M, or Y",
-    type=float,
-    default=0.9,
-)
-parser.add_argument(
     "-c",
     "--cyan-in",
     help="Color of cyan in input image",
@@ -75,6 +68,13 @@ parser.add_argument(
     help="Color of magenta in output image",
     type=hex_color,
     default="#ff00ff",
+)
+parser.add_argument(
+    "-Y",
+    "--yellow-out",
+    help="Color of yellow in output image",
+    type=hex_color,
+    default="#ffff00",
 )
 parser.add_argument(
     "-K",
@@ -147,10 +147,22 @@ if __name__ == "__main__":
     black = np.prod(cmy, axis=2, dtype=np.uint32) / 255**2
 
     log.info("re-combining CMYK")
-    filtered = np.full(im_arr.shape, 255, dtype=np.uint8)
-    filtered[cyan > args.threshold, 2] = 0
-    filtered[magenta > args.threshold, 1] = 0
-    filtered[yellow > args.threshold, 0] = 0
+    cmy_out_sRGB = (
+        np.array(
+            [
+                args.cyan_out,
+                args.magenta_out,
+                args.yellow_out,
+            ],
+            dtype=np.float32,
+        )
+        / 255.0
+    )
+    cmy_out_xyz = cv2.cvtColor(np.expand_dims(cmy_out_sRGB, axis=0), cv2.COLOR_BGR2XYZ)[0]
 
-    log.info("writing out filterd image")
+    filtered = cmy @ (white_xyz - cmy_out_xyz)
+    filtered = cv2.cvtColor(white_xyz - filtered, cv2.COLOR_XYZ2BGR)
+    filtered = (filtered * 255.0).round().clip(0, 255).astype(np.uint8)
+
+    log.info("writing out filtered image")
     cv2.imwrite("filtered.png", filtered)
