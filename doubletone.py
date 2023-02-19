@@ -60,109 +60,228 @@ parser.add_argument(
     "--cyan-out",
     help="Color of cyan in output image",
     type=hex_color,
-    default="#00ffff",
+    default=None,
 )
 parser.add_argument(
     "-M",
     "--magenta-out",
     help="Color of magenta in output image",
     type=hex_color,
-    default="#ff00ff",
+    default=None,
 )
 parser.add_argument(
     "-Y",
     "--yellow-out",
     help="Color of yellow in output image",
     type=hex_color,
-    default="#ffff00",
+    default=None,
 )
 parser.add_argument(
     "-K",
     "--black-out",
     help="Color of black in output image",
     type=hex_color,
-    default="#000000",
+    default=None,
 )
+parser.add_argument(
+    "--cyan-angle",
+    help="Angle of filter for cyan in turns",
+    type=float,
+    default=1 / 16,
+)
+parser.add_argument(
+    "--magenta-angle",
+    help="Angle of filter for magenta in turns",
+    type=float,
+    default=2 / 16,
+)
+parser.add_argument(
+    "--yellow-angle",
+    help="Angle of filter for yellow in turns",
+    type=float,
+    default=0,
+)
+parser.add_argument(
+    "--black-angle",
+    help="Angle of filter for black in turns",
+    type=float,
+    default=3 / 16,
+)
+parser.add_argument(
+    "-s",
+    "--filter-window",
+    help="Window width of low pass filter in pixels",
+    type=float,
+    default=12,
+)
+
+
+def intensity_from_srgb(image):
+    gamma = 2.4
+    A = 0.055
+    phi = 12.92
+    X = 0.04045
+    image = image.astype(np.float32)
+    image /= 255.0
+    linear_region = image < X
+    image[linear_region] /= phi
+    image_non_linear_region = image[np.logical_not(linear_region)]
+    del linear_region
+    image_non_linear_region += A
+    image_non_linear_region /= 1.0 + A
+    image_non_linear_region **= gamma
+    return image
+
+
+def srgb_from_intensity(intensity):
+    gamma = 2.4
+    A = 0.055
+    phi = 12.92
+    X = 0.04045
+    linear_region = intensity < X / phi
+    intensity[linear_region] *= phi
+    intensity_non_linear_region = intensity[np.logical_not(linear_region)]
+    del linear_region
+    intensity_non_linear_region **= 1.0 / gamma
+    intensity_non_linear_region *= 1.0 + A
+    intensity_non_linear_region -= A
+
+    intensity *= 255.0
+    intensity.round(out=intensity)
+    intensity.clip(0.0, 255.0, out=intensity)
+    return intensity.astype(np.uint8)
+
+
+def cmy_from_bgr(bgr, cyan, magenta, yellow):
+    intensity = intensity_from_srgb(bgr[0])
+    del bgr[0]
+    cmy_srgb = np.array(
+        [
+            cyan,
+            magenta,
+            yellow,
+        ]
+    )
+    cmy_intensity = intensity_from_srgb(cmy_srgb)
+    white_intensity = np.array([1.0, 1.0, 1.0])
+    basis = white_intensity - cmy_intensity
+
+    cmy = white_intensity - intensity
+    del intensity
+    cmy = cmy @ np.linalg.inv(basis)
+    return cmy
+
+
+def bgr_from_cmy(cmy, cyan, magenta, yellow):
+    cmy_srgb = np.array(
+        [
+            cyan,
+            magenta,
+            yellow,
+        ]
+    )
+    cmy_intensity = intensity_from_srgb(cmy_srgb)
+    white_intensity = np.array([1.0, 1.0, 1.0])
+    basis = white_intensity - cmy_intensity
+
+    bgr = cmy[0] @ basis
+    del cmy[0]
+    bgr = white_intensity - bgr
+    bgr = srgb_from_intensity(bgr)
+    return bgr
+
+
+def rotated_lanczos(angle, scale, lobes=3):
+    bound = int(np.round(scale * lobes * np.sqrt(2)))
+    samples = bound * 2 - 1
+    axis = np.linspace(-bound / scale, bound / scale, samples)
+    u, v = np.meshgrid(axis, axis)
+
+    r = np.sqrt(u**2 + v**2)
+    theta = np.arctan2(v, u)
+
+    x = r * np.cos(theta + angle)
+    y = r * np.sin(theta + angle)
+
+    L_x = np.sinc(x) * np.sinc(x / lobes)
+    L_y = np.sinc(y) * np.sinc(y / lobes)
+
+    kernel = L_x * L_y
+    kernel[np.fmax(abs(x), abs(y)) >= lobes] = 0.0
+    return kernel / kernel.sum()
+
+
+def lanczos(scale, lobes=3):
+    bound = int(np.round(scale * lobes))
+    samples = bound * 2 - 1
+    x = np.linspace(-bound / scale, bound / scale, samples)
+    L = np.sinc(x) * np.sinc(x / lobes)
+    return L / L.sum()
+
 
 if __name__ == "__main__":
     args = parser.parse_args()
     log.basicConfig(level=args.log_level)
+    for color in "cyan", "magenta", "yellow", "black":
+        if vars(args)[f"{color}_out"] is None:
+            vars(args)[f"{color}_out"] = vars(args)[f"{color}_in"]
 
     try:
         log.info("loading image")
-        image = cv2.imread(args.image, flags=cv2.IMREAD_COLOR | cv2.IMREAD_ANYDEPTH)
-        image = image.astype(np.float32) / 255.0
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2XYZ)
-        im_arr = np.asarray(image)
+        image = [cv2.imread(args.image, flags=cv2.IMREAD_COLOR)]
     except Exception as e:
         log.critical(f"Failed to open image: {e}")
         exit(1)
 
-    # log.info("computing ink colors")
-    # log.debug("selecting random subset of pixels")
-    # pixels = im_arr.reshape(-1, im_arr.shape[-1])
-    # SUBSET_MAX_SIZE = 1000000
-    # subset = np.random.default_rng().choice(
-    #    pixels, size=min(SUBSET_MAX_SIZE, pixels.shape[0]), replace=False, shuffle=False
-    # )
-
-    # log.debug("running k-means clustering on subset")
-    # CMYK_COLORS = np.array(
-    #    [
-    #        [50, 150, 150],  # C
-    #        [150, 50, 150],  # M
-    #        [150, 150, 50],  # Y
-    #        [0, 0, 100],  # C + M
-    #        [100, 0, 0],  # M + Y
-    #        [0, 100, 0],  # Y + C
-    #        [0, 0, 0],  # K
-    #        [255, 255, 255],  # white, no ink
-    #    ]
-    # )
-    # colors, labels = sp.cluster.vq.kmeans2(subset.astype(np.float32), 20, minit="++", missing="warn")
-
     log.info("converting to CMYK")
-    cmy_sRGB = (
-        np.array(
-            [
-                args.cyan_in,
-                args.magenta_in,
-                args.yellow_in,
-            ],
-            dtype=np.float32,
-        )
-        / 255.0
-    )
-    cmy_xyz = cv2.cvtColor(np.expand_dims(cmy_sRGB, axis=0), cv2.COLOR_BGR2XYZ)[0]
-    white_xyz = cv2.cvtColor(
-        np.array([[[1.0, 1.0, 1.0]]], dtype=np.float32), cv2.COLOR_BGR2XYZ
-    )[0, 0]
-    basis = white_xyz - cmy_xyz
+    cmy = cmy_from_bgr(image, args.cyan_in, args.magenta_in, args.yellow_in)
+    width, height, channels = cmy.shape
 
-    cmy = (white_xyz - im_arr) @ np.linalg.inv(basis)
+    log.info("descreening image")
+    c = sp.ndimage.rotate(cmy[:, :, 0], args.cyan_angle, prefilter=False)
+    m = sp.ndimage.rotate(cmy[:, :, 1], args.magenta_angle, prefilter=False)
+    y = sp.ndimage.rotate(cmy[:, :, 2], args.yellow_angle, prefilter=False)
+    del cmy
 
-    cyan = cmy[:, :, 0]
-    magenta = cmy[:, :, 1]
-    yellow = cmy[:, :, 2]
-    black = np.prod(cmy, axis=2, dtype=np.uint32) / 255**2
+    kernel = lanczos(args.filter_window)
+
+    log.debug("descreening cyan channel")
+    c = sp.ndimage.convolve1d(c, kernel, axis=0)
+    c = sp.ndimage.convolve1d(c, kernel, axis=1)
+    c = sp.ndimage.rotate(c, -args.cyan_angle, prefilter=False, reshape=False)
+    c_width, c_height = c.shape
+    border_width = (c_width - width) // 2
+    border_height = (c_height - height) // 2
+    c = c[border_width : border_width + width, border_height : border_height + height]
+    assert c.shape == (width, height)
+
+    log.debug("descreening magenta channel")
+    m = sp.ndimage.convolve1d(m, kernel, axis=0)
+    m = sp.ndimage.convolve1d(m, kernel, axis=1)
+    m = sp.ndimage.rotate(m, -args.magenta_angle, prefilter=False, reshape=False)
+    m_width, m_height = m.shape
+    border_width = (m_width - width) // 2
+    border_height = (m_height - height) // 2
+    m = m[border_width : border_width + width, border_height : border_height + height]
+    assert m.shape == (width, height)
+
+    log.debug("descreening yellow channel")
+    y = sp.ndimage.convolve1d(y, kernel, axis=0)
+    y = sp.ndimage.convolve1d(y, kernel, axis=1)
+    y = sp.ndimage.rotate(y, -args.yellow_angle, prefilter=False, reshape=False)
+    y_width, y_height = y.shape
+    border_width = (y_width - width) // 2
+    border_height = (y_height - height) // 2
+    y = y[border_width : border_width + width, border_height : border_height + height]
+    assert y.shape == (width, height)
+
+    filtered = [np.stack([c, m, y], axis=2)]
+    del c
+    del m
+    del y
 
     log.info("re-combining CMYK")
-    cmy_out_sRGB = (
-        np.array(
-            [
-                args.cyan_out,
-                args.magenta_out,
-                args.yellow_out,
-            ],
-            dtype=np.float32,
-        )
-        / 255.0
-    )
-    cmy_out_xyz = cv2.cvtColor(np.expand_dims(cmy_out_sRGB, axis=0), cv2.COLOR_BGR2XYZ)[0]
-
-    filtered = cmy @ (white_xyz - cmy_out_xyz)
-    filtered = cv2.cvtColor(white_xyz - filtered, cv2.COLOR_XYZ2BGR)
-    filtered = (filtered * 255.0).round().clip(0, 255).astype(np.uint8)
+    combined = bgr_from_cmy(filtered, args.cyan_out, args.magenta_out, args.yellow_out)
 
     log.info("writing out filtered image")
-    cv2.imwrite("filtered.png", filtered)
+    cv2.imwrite("filtered.png", combined)
