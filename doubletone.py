@@ -188,30 +188,9 @@ def bgr_from_cmy(cmy, cyan, magenta, yellow):
     white_intensity = np.array([1.0, 1.0, 1.0])
     basis = white_intensity - cmy_intensity
 
-    bgr_intensity = cmy[0] @ basis
-    del cmy[0]
+    bgr_intensity = cmy @ basis
     bgr_intensity = white_intensity - bgr_intensity
     return bgr_intensity
-
-
-def rotated_lanczos(angle, scale, lobes=3):
-    bound = int(np.round(scale * lobes * np.sqrt(2)))
-    samples = bound * 2 - 1
-    axis = np.linspace(-bound / scale, bound / scale, samples)
-    u, v = np.meshgrid(axis, axis)
-
-    r = np.sqrt(u**2 + v**2)
-    theta = np.arctan2(v, u)
-
-    x = r * np.cos(theta + angle)
-    y = r * np.sin(theta + angle)
-
-    L_x = np.sinc(x) * np.sinc(x / lobes)
-    L_y = np.sinc(y) * np.sinc(y / lobes)
-
-    kernel = L_x * L_y
-    kernel[np.fmax(abs(x), abs(y)) >= lobes] = 0.0
-    return kernel / kernel.sum()
 
 
 def lanczos(scale, lobes=3):
@@ -297,7 +276,7 @@ if __name__ == "__main__":
     k **= 2.0
     assert k.shape == (width, height)
 
-    filtered = [np.stack([c, m, y], axis=2)]
+    filtered = np.stack([c, m, y], axis=2)
     del c
     del m
     del y
