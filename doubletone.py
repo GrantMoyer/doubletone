@@ -87,7 +87,7 @@ parser.add_argument(
     "--cyan-angle",
     help="Angle of filter for cyan in turns",
     type=float,
-    default=1 / 16,
+    default=3 / 16,
 )
 parser.add_argument(
     "--magenta-angle",
@@ -105,7 +105,14 @@ parser.add_argument(
     "--black-angle",
     help="Angle of filter for black in turns",
     type=float,
-    default=3 / 16,
+    default=1 / 16,
+)
+parser.add_argument(
+    "-t",
+    "--black-threshold",
+    help="Threshold to consider pixel black",
+    type=float,
+    default=0.1,
 )
 parser.add_argument(
     "-s",
@@ -152,9 +159,7 @@ def srgb_from_intensity(intensity):
     return intensity.astype(np.uint8)
 
 
-def cmy_from_bgr(bgr, cyan, magenta, yellow):
-    intensity = intensity_from_srgb(bgr[0])
-    del bgr[0]
+def cmy_from_bgr(bgr_intensity, cyan, magenta, yellow):
     cmy_srgb = np.array(
         [
             cyan,
@@ -166,8 +171,7 @@ def cmy_from_bgr(bgr, cyan, magenta, yellow):
     white_intensity = np.array([1.0, 1.0, 1.0])
     basis = white_intensity - cmy_intensity
 
-    cmy = white_intensity - intensity
-    del intensity
+    cmy = white_intensity - bgr_intensity
     cmy = cmy @ np.linalg.inv(basis)
     return cmy
 
@@ -184,11 +188,10 @@ def bgr_from_cmy(cmy, cyan, magenta, yellow):
     white_intensity = np.array([1.0, 1.0, 1.0])
     basis = white_intensity - cmy_intensity
 
-    bgr = cmy[0] @ basis
+    bgr_intensity = cmy[0] @ basis
     del cmy[0]
-    bgr = white_intensity - bgr
-    bgr = srgb_from_intensity(bgr)
-    return bgr
+    bgr_intensity = white_intensity - bgr_intensity
+    return bgr_intensity
 
 
 def rotated_lanczos(angle, scale, lobes=3):
@@ -228,19 +231,27 @@ if __name__ == "__main__":
 
     try:
         log.info("loading image")
-        image = [cv2.imread(args.image, flags=cv2.IMREAD_COLOR)]
+        image = cv2.imread(args.image, flags=cv2.IMREAD_COLOR)
     except Exception as e:
         log.critical(f"Failed to open image: {e}")
         exit(1)
 
     log.info("converting to CMYK")
-    cmy = cmy_from_bgr(image, args.cyan_in, args.magenta_in, args.yellow_in)
+    bgr_intensity = intensity_from_srgb(image)
+    del image
+    cmy = cmy_from_bgr(bgr_intensity, args.cyan_in, args.magenta_in, args.yellow_in)
+    black_intensity = intensity_from_srgb(args.black_in)
+    k = (
+        np.linalg.norm(bgr_intensity - black_intensity, axis=2) < args.black_threshold
+    ).astype(np.float32)
+    del bgr_intensity
     width, height, channels = cmy.shape
 
     log.info("descreening image")
-    c = sp.ndimage.rotate(cmy[:, :, 0], args.cyan_angle, prefilter=False)
-    m = sp.ndimage.rotate(cmy[:, :, 1], args.magenta_angle, prefilter=False)
-    y = sp.ndimage.rotate(cmy[:, :, 2], args.yellow_angle, prefilter=False)
+    c = sp.ndimage.rotate(cmy[:, :, 0], -360 * args.cyan_angle, prefilter=False)
+    m = sp.ndimage.rotate(cmy[:, :, 1], -360 * args.magenta_angle, prefilter=False)
+    y = sp.ndimage.rotate(cmy[:, :, 2], -360 * args.yellow_angle, prefilter=False)
+    k = sp.ndimage.rotate(k, -360 * args.black_angle, prefilter=False)
     del cmy
 
     kernel = lanczos(args.filter_window)
@@ -248,7 +259,7 @@ if __name__ == "__main__":
     log.debug("descreening cyan channel")
     c = sp.ndimage.convolve1d(c, kernel, axis=0)
     c = sp.ndimage.convolve1d(c, kernel, axis=1)
-    c = sp.ndimage.rotate(c, -args.cyan_angle, prefilter=False, reshape=False)
+    c = sp.ndimage.rotate(c, 360 * args.cyan_angle, prefilter=False, reshape=False)
     c_width, c_height = c.shape
     border_width = (c_width - width) // 2
     border_height = (c_height - height) // 2
@@ -258,7 +269,7 @@ if __name__ == "__main__":
     log.debug("descreening magenta channel")
     m = sp.ndimage.convolve1d(m, kernel, axis=0)
     m = sp.ndimage.convolve1d(m, kernel, axis=1)
-    m = sp.ndimage.rotate(m, -args.magenta_angle, prefilter=False, reshape=False)
+    m = sp.ndimage.rotate(m, 360 * args.magenta_angle, prefilter=False, reshape=False)
     m_width, m_height = m.shape
     border_width = (m_width - width) // 2
     border_height = (m_height - height) // 2
@@ -268,12 +279,23 @@ if __name__ == "__main__":
     log.debug("descreening yellow channel")
     y = sp.ndimage.convolve1d(y, kernel, axis=0)
     y = sp.ndimage.convolve1d(y, kernel, axis=1)
-    y = sp.ndimage.rotate(y, -args.yellow_angle, prefilter=False, reshape=False)
+    y = sp.ndimage.rotate(y, 360 * args.yellow_angle, prefilter=False, reshape=False)
     y_width, y_height = y.shape
     border_width = (y_width - width) // 2
     border_height = (y_height - height) // 2
     y = y[border_width : border_width + width, border_height : border_height + height]
     assert y.shape == (width, height)
+
+    log.debug("descreening black channel")
+    k = sp.ndimage.convolve1d(k, kernel, axis=0)
+    k = sp.ndimage.convolve1d(k, kernel, axis=1)
+    k = sp.ndimage.rotate(k, 360 * args.black_angle, prefilter=False, reshape=False)
+    k_width, k_height = k.shape
+    border_width = (k_width - width) // 2
+    border_height = (k_height - height) // 2
+    k = k[border_width : border_width + width, border_height : border_height + height]
+    k **= 2.0
+    assert k.shape == (width, height)
 
     filtered = [np.stack([c, m, y], axis=2)]
     del c
@@ -281,7 +303,19 @@ if __name__ == "__main__":
     del y
 
     log.info("re-combining CMYK")
-    combined = bgr_from_cmy(filtered, args.cyan_out, args.magenta_out, args.yellow_out)
+    combined_intensity = bgr_from_cmy(
+        filtered, args.cyan_out, args.magenta_out, args.yellow_out
+    )
+    black_out_intensity = intensity_from_srgb(args.black_out)
+    combined_intensity = np.expand_dims(
+        1 - k, axis=2
+    ) * combined_intensity + np.expand_dims(k, axis=2) * np.expand_dims(
+        black_out_intensity, axis=(0, 1)
+    )
+    del k
+
+    combined = srgb_from_intensity(combined_intensity)
+    del combined_intensity
 
     log.info("writing out filtered image")
     cv2.imwrite("filtered.png", combined)
