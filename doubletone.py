@@ -265,12 +265,12 @@ if __name__ == "__main__":
 
     del cmy
 
+    log.info("re-combining CMYK")
     filtered = np.stack([c, m, y], axis=2)
     del c
     del m
     del y
 
-    log.info("re-combining CMYK")
     combined_intensity = bgr_from_cmy(
         filtered, args.cyan_out, args.magenta_out, args.yellow_out
     )
