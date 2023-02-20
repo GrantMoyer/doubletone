@@ -222,19 +222,28 @@ def descreen_channel(channel, angle, kernel):
     return channel
 
 
-if __name__ == "__main__":
-    args = parser.parse_args()
-    log.basicConfig(level=args.log_level)
+def handle_default_colors_out(args):
     for color in "cyan", "magenta", "yellow", "black":
         if vars(args)[f"{color}_out"] is None:
             vars(args)[f"{color}_out"] = vars(args)[f"{color}_in"]
 
+
+def load_image(path):
     try:
-        log.info("loading image")
-        image = cv2.imread(args.image, flags=cv2.IMREAD_COLOR)
+        image = cv2.imread(path, flags=cv2.IMREAD_COLOR)
+        return image
     except Exception as e:
         log.critical(f"Failed to open image: {e}")
         exit(1)
+
+
+if __name__ == "__main__":
+    args = parser.parse_args()
+    handle_default_colors_out(args)
+    log.basicConfig(level=args.log_level)
+
+    log.info("loading image")
+    image = load_image(args.image)
 
     log.info("converting to CMYK")
     bgr_intensity = intensity_from_srgb(image)
