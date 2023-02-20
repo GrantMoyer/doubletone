@@ -201,6 +201,27 @@ def lanczos(scale, lobes=3):
     return L / L.sum()
 
 
+def descreen_channel(channel, angle, kernel):
+    width, height = channel.shape
+
+    channel = sp.ndimage.rotate(channel, -360 * angle, prefilter=False, mode="reflect")
+    channel = sp.ndimage.convolve1d(channel, kernel, axis=0, mode="reflect")
+    channel = sp.ndimage.convolve1d(channel, kernel, axis=1, mode="reflect")
+    channel = sp.ndimage.rotate(
+        channel, 360 * angle, prefilter=False, reshape=False, mode="reflect"
+    )
+
+    rotated_width, rotated_height = channel.shape
+    border_width = (rotated_width - width) // 2
+    border_height = (rotated_height - height) // 2
+    channel = channel[
+        border_width : border_width + width, border_height : border_height + height
+    ]
+    assert channel.shape == (width, height)
+
+    return channel
+
+
 if __name__ == "__main__":
     args = parser.parse_args()
     log.basicConfig(level=args.log_level)
@@ -227,54 +248,22 @@ if __name__ == "__main__":
     width, height, channels = cmy.shape
 
     log.info("descreening image")
-    c = sp.ndimage.rotate(cmy[:, :, 0], -360 * args.cyan_angle, prefilter=False, mode='reflect')
-    m = sp.ndimage.rotate(cmy[:, :, 1], -360 * args.magenta_angle, prefilter=False, mode='reflect')
-    y = sp.ndimage.rotate(cmy[:, :, 2], -360 * args.yellow_angle, prefilter=False, mode='reflect')
-    k = sp.ndimage.rotate(k, -360 * args.black_angle, prefilter=False, mode='reflect')
-    del cmy
-
     kernel = lanczos(args.filter_window)
 
     log.debug("descreening cyan channel")
-    c = sp.ndimage.convolve1d(c, kernel, axis=0, mode='reflect')
-    c = sp.ndimage.convolve1d(c, kernel, axis=1, mode='reflect')
-    c = sp.ndimage.rotate(c, 360 * args.cyan_angle, prefilter=False, reshape=False, mode='reflect')
-    c_width, c_height = c.shape
-    border_width = (c_width - width) // 2
-    border_height = (c_height - height) // 2
-    c = c[border_width : border_width + width, border_height : border_height + height]
-    assert c.shape == (width, height)
+    c = descreen_channel(cmy[:, :, 0], args.cyan_angle, kernel)
 
     log.debug("descreening magenta channel")
-    m = sp.ndimage.convolve1d(m, kernel, axis=0, mode='reflect')
-    m = sp.ndimage.convolve1d(m, kernel, axis=1, mode='reflect')
-    m = sp.ndimage.rotate(m, 360 * args.magenta_angle, prefilter=False, reshape=False, mode='reflect')
-    m_width, m_height = m.shape
-    border_width = (m_width - width) // 2
-    border_height = (m_height - height) // 2
-    m = m[border_width : border_width + width, border_height : border_height + height]
-    assert m.shape == (width, height)
+    m = descreen_channel(cmy[:, :, 1], args.magenta_angle, kernel)
 
     log.debug("descreening yellow channel")
-    y = sp.ndimage.convolve1d(y, kernel, axis=0, mode='reflect')
-    y = sp.ndimage.convolve1d(y, kernel, axis=1, mode='reflect')
-    y = sp.ndimage.rotate(y, 360 * args.yellow_angle, prefilter=False, reshape=False, mode='reflect')
-    y_width, y_height = y.shape
-    border_width = (y_width - width) // 2
-    border_height = (y_height - height) // 2
-    y = y[border_width : border_width + width, border_height : border_height + height]
-    assert y.shape == (width, height)
+    y = descreen_channel(cmy[:, :, 2], args.yellow_angle, kernel)
 
     log.debug("descreening black channel")
-    k = sp.ndimage.convolve1d(k, kernel, axis=0, mode='reflect')
-    k = sp.ndimage.convolve1d(k, kernel, axis=1, mode='reflect')
-    k = sp.ndimage.rotate(k, 360 * args.black_angle, prefilter=False, reshape=False, mode='reflect')
-    k_width, k_height = k.shape
-    border_width = (k_width - width) // 2
-    border_height = (k_height - height) // 2
-    k = k[border_width : border_width + width, border_height : border_height + height]
-    k **= 2.0
-    assert k.shape == (width, height)
+    k = descreen_channel(k, args.black_angle, kernel)
+    k **= 2.0  # reduce darkening from black being "double counted"
+
+    del cmy
 
     filtered = np.stack([c, m, y], axis=2)
     del c
