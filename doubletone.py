@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import argparse
-import cv2
+import imageio.v3 as iio
 import logging as log
 import numpy as np
 import re
@@ -12,7 +12,7 @@ def hex_color(hex):
     m = re.fullmatch(r"#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})", hex)
     if not m:
         raise ValueError("Failed to parse hex color: {hex}")
-    return np.array([int(m[i], base=16) for i in [3, 2, 1]], dtype=np.uint8)
+    return np.array([int(m[i], base=16) for i in [3, 2, 1]], dtype=np.float32) / 255.0
 
 
 parser = argparse.ArgumentParser(
@@ -25,7 +25,7 @@ parser.add_argument(
     help="Verbosity of logging",
     choices=("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"),
     type=str.upper,
-    default=log.NOTSET,
+    default=log.INFO,
 )
 parser.add_argument(
     "-c",
@@ -128,8 +128,6 @@ def intensity_from_srgb(image):
     A = 0.055
     phi = 12.92
     X = 0.04045
-    image = image.astype(np.float32)
-    image /= 255.0
     linear_region = image < X
     image[linear_region] /= phi
     image_non_linear_region = image[np.logical_not(linear_region)]
@@ -153,10 +151,7 @@ def srgb_from_intensity(intensity):
     intensity_non_linear_region *= 1.0 + A
     intensity_non_linear_region -= A
 
-    intensity *= 255.0
-    intensity.round(out=intensity)
-    intensity.clip(0.0, 255.0, out=intensity)
-    return intensity.astype(np.uint8)
+    return intensity
 
 
 def cmy_from_bgr(bgr_intensity, cyan, magenta, yellow):
@@ -230,11 +225,21 @@ def handle_default_colors_out(args):
 
 def load_image(path):
     try:
-        image = cv2.imread(path, flags=cv2.IMREAD_COLOR)
+        props = iio.improps(path)
+        image = iio.imread(path)
+        if props.shape[2] == 4:
+            image = image[:, :, 0:3]
+        if np.issubdtype(props.dtype, np.integer):
+            iinfo = np.iinfo(props.dtype)
+            image = (image.astype(np.float32) - iinfo.min) / (iinfo.max - iinfo.min)
         return image
     except Exception as e:
         log.critical(f"Failed to open image: {e}")
         exit(1)
+
+
+def save_image(path, image):
+    iio.imwrite(path, (image * 255.0).round().clip(0.0, 255.0).astype(np.uint8))
 
 
 if __name__ == "__main__":
@@ -259,16 +264,16 @@ if __name__ == "__main__":
     log.info("descreening image")
     kernel = lanczos(args.filter_window)
 
-    log.debug("descreening cyan channel")
+    log.info("descreening cyan channel")
     c = descreen_channel(cmy[:, :, 0], args.cyan_angle, kernel)
 
-    log.debug("descreening magenta channel")
+    log.info("descreening magenta channel")
     m = descreen_channel(cmy[:, :, 1], args.magenta_angle, kernel)
 
-    log.debug("descreening yellow channel")
+    log.info("descreening yellow channel")
     y = descreen_channel(cmy[:, :, 2], args.yellow_angle, kernel)
 
-    log.debug("descreening black channel")
+    log.info("descreening black channel")
     k = descreen_channel(k, args.black_angle, kernel)
     k **= 2.0  # reduce darkening from black being "double counted"
 
@@ -295,4 +300,4 @@ if __name__ == "__main__":
     del combined_intensity
 
     log.info("writing out filtered image")
-    cv2.imwrite("filtered.png", combined)
+    save_image("filtered.png", combined)
