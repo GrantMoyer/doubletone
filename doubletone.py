@@ -188,12 +188,13 @@ def bgr_from_cmy(cmy, cyan, magenta, yellow):
     return bgr_intensity
 
 
-def lanczos(scale, lobes=3):
-    bound = int(np.round(scale * lobes))
-    samples = bound * 2 - 1
-    x = np.linspace(-bound / scale, bound / scale, samples)
-    L = np.sinc(x) * np.sinc(x / lobes)
-    return L / L.sum()
+def low_pass(grid_size, lobes=3):
+    bound = int(np.round(grid_size * lobes))
+    samples = bound * 2 + 1
+    n = np.arange(-bound, bound + 1) / grid_size
+    L = np.sinc(n) * np.sinc(n / lobes) / grid_size
+    L[abs(n) >= lobes] = 0
+    return L / L.sum()  # Theoretically kernel is normalized; deal with numerical error
 
 
 def descreen_channel(channel, angle, kernel):
@@ -262,7 +263,7 @@ if __name__ == "__main__":
     width, height, channels = cmy.shape
 
     log.info("descreening image")
-    kernel = lanczos(args.filter_window)
+    kernel = low_pass(args.filter_window)
 
     log.info("descreening cyan channel")
     c = descreen_channel(cmy[:, :, 0], args.cyan_angle, kernel)
